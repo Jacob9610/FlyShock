@@ -44,6 +44,10 @@ crossing_line = PROCESS_REZ[1] // 2  # horizontal line
 zone_counts = {"top": 0, "bottom": 0}
 fly_positions = {}
 
+# Frame crop range (set after crop selection)
+start_crop_frame = 0
+end_crop_frame = None
+
 # Create Background Subtractor
 fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
 
@@ -72,6 +76,33 @@ def prompt_experiment_metadata():
                 pass  # ignore invalid input
     window.close()
     return values['top_color'], values['bottom_color']
+
+# ----------- FUNCTION: Prompt for Crop Range -----------
+def select_crop_range(vid_path):
+    cap = cv2.VideoCapture(vid_path)
+    if not cap.isOpened():
+        print("Failed to open video for cropping preview")
+        return 0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    layout = [
+        [sg.Text("Select start and end time (in seconds)")],
+        [sg.Text("Start:"), sg.Slider(range=(0, total_frames//30), orientation='h', key='start', resolution=1)],
+        [sg.Text("End:"), sg.Slider(range=(0, total_frames//30), orientation='h', key='end', resolution=1)],
+        [sg.Button("OK")]
+    ]
+    window = sg.Window("Video Crop Range", layout)
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED:
+            exit()
+        if event == "OK":
+            start_sec = int(values['start'])
+            end_sec = int(values['end'])
+            break
+    window.close()
+    cap.release()
+    return int(start_sec * 30), int(end_sec * 30)
 
 # ----------- FUNCTION: Calculate Median Frame -----------
 def getMedian(vid, medianFrames, PROCESS_REZ):
@@ -142,10 +173,10 @@ def initialize_video_capture(path, start_frame):
 def save_results(filename, log, top_color, bottom_color):
     with open(filename, 'w') as f:
         f.write(f"# Video: {vid}\n")
-        f.write(f"# Start time: {video_start_time}\n\n")
+        f.write(f"# Start time: {video_start_time}\n")
         f.write(f"# Top color: {top_color}\n")
-        f.write(f"# Bottom color: {bottom_color}\n\n")
-        f.write(f"# Initial Top: {zone_counts['top']}, Bottom: {zone_counts['bottom']}\n\n")
+        f.write(f"# Bottom color: {bottom_color}\n")
+        f.write(f"# Initial Top: {zone_counts['top']}, Bottom: {zone_counts['bottom']}\n")
         f.write("Frame,Timestamp(s),Direction,TopCount,BottomCount\n")
         for row in log:
             f.write(",".join(map(str, row)) + "\n")
@@ -157,26 +188,27 @@ def handle_exit(signal_received=None, frame=None):
     cv2.destroyAllWindows()
     sys.exit(0)
 
-# Register the signal handler for Ctrl+C
 signal.signal(signal.SIGINT, handle_exit)
 
 # ----------- FUNCTION: Main Program -----------
 def run_detection():
-    global detectArray, top_color, bottom_color
+    global detectArray, top_color, bottom_color, start_crop_frame, end_crop_frame
 
     top_color, bottom_color = prompt_experiment_metadata()
+    start_crop_frame, end_crop_frame = select_crop_range(vid)
+
     medianFrame = getMedian(vid, medianFrames, PROCESS_REZ)
     if medianFrame is None:
         return
 
     mask = create_mask(PROCESS_REZ, (40, 20, 300, 400))
-    cap = initialize_video_capture(vid, skipFrames)
+    cap = initialize_video_capture(vid, start_crop_frame)
     if cap is None:
         return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
-    frameCount = skipFrames
+    frameCount = start_crop_frame
     start_time = time.time()
 
     fly_last_y = {}
@@ -185,6 +217,9 @@ def run_detection():
     while cap.isOpened():
         key = chr(cv2.waitKey(DELAY) & 0xFF)
         if key == 'q':
+            break
+
+        if frameCount > end_crop_frame:
             break
 
         ret, frame = cap.read()
@@ -227,10 +262,10 @@ def run_detection():
             fly_id += 1
 
         elapsed = time.time() - start_time
-        frames_done = frameCount - skipFrames
+        frames_done = frameCount - start_crop_frame
         processing_fps = frames_done / elapsed if elapsed > 0 else 0
-        est_remaining = (total_frames - frameCount) / processing_fps if processing_fps > 0 else 0
-        print(f"Frame: {frameCount}/{total_frames}, FPS: {processing_fps:.2f}, ETA: {int(est_remaining // 60)} min {int(est_remaining % 60)} sec", end='\r')
+        est_remaining = (end_crop_frame - frameCount) / processing_fps if processing_fps > 0 else 0
+        print(f"Frame: {frameCount}/{end_crop_frame}, FPS: {processing_fps:.2f}, ETA: {int(est_remaining // 60)} min {int(est_remaining % 60)} sec", end='\r')
 
         cv2.imshow('Masked Frame', cv2.resize(maskedGray, DISPLAY_REZ))
         cv2.imshow('Binary Mask', cv2.resize(binaryIM, DISPLAY_REZ))
