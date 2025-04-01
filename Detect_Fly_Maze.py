@@ -6,6 +6,10 @@ import FreeSimpleGUI as sg
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
 import time
+import os
+from datetime import datetime
+import signal
+import sys
 
 ############### CHOOSE VIDEO FILE INTERACTIVELY ###################
 Tk().withdraw()  # Hide the root Tkinter window
@@ -14,6 +18,7 @@ if not vid:
     print("No file selected. Exiting...")
     exit()
 
+video_start_time = datetime.fromtimestamp(os.path.getmtime(vid))
 detectFileName = vid + '.csv'  # file that saves object data
 
 ########## PROGRAM VARIABLES ################################################
@@ -34,25 +39,41 @@ PROCESS_REZ = (320, 240)
 print('Process Resolution', PROCESS_REZ)
 
 ############# DETECT OUTPUT ##################
-detectHeader = 'FRAME,ID,XC,YC,AREA,MULTI_FLAG'
-MAX_COL = 6
-FRAME, ID, XC, YC, AREA, MULTI_FLAG = range(MAX_COL)
-detectArray = np.empty((0, MAX_COL), dtype='int')
-
-# Crossing detection variables
-crossing_line = PROCESS_REZ[0] // 2
-crossing_count = 0
+detectLog = []
+crossing_line = PROCESS_REZ[1] // 2  # horizontal line
+zone_counts = {"top": 0, "bottom": 0}
 fly_positions = {}
 
 # Create Background Subtractor
 fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
 
-# ----------- FUNCTION: Calculate Median Frame -----------
-# @param vid: path to the video file
-# @param medianFrames: number of frames to sample for median calculation
-# @param PROCESS_REZ: resolution to process frames
-# @return: median grayscale frame used as static background reference
+# ----------- FUNCTION: Prompt for Experiment Info -----------
+def prompt_experiment_metadata():
+    layout = [
+        [sg.Text('Top Zone Color:'), sg.Combo(['Green', 'Red', 'Blue'], key='top_color')],
+        [sg.Text('Bottom Zone Color:'), sg.Combo(['Green', 'Red', 'Blue'], key='bottom_color')],
+        [sg.Text('Number of Flies in Top Zone:'), sg.Input(key='top_flies')],
+        [sg.Text('Number of Flies in Bottom Zone:'), sg.Input(key='bottom_flies')],
+        [sg.Button('OK')]
+    ]
+    window = sg.Window('Experiment Setup', layout)
+    values = {}
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED:
+            exit()
+        if event == 'OK':
+            try:
+                zone_counts['top'] = int(values['top_flies'])
+                zone_counts['bottom'] = int(values['bottom_flies'])
+                if values['top_color'] and values['bottom_color']:
+                    break
+            except:
+                pass  # ignore invalid input
+    window.close()
+    return values['top_color'], values['bottom_color']
 
+# ----------- FUNCTION: Calculate Median Frame -----------
 def getMedian(vid, medianFrames, PROCESS_REZ):
     print('openVideo:', vid)
     cap = cv2.VideoCapture(vid)
@@ -86,34 +107,22 @@ def getMedian(vid, medianFrames, PROCESS_REZ):
     cap.release()
     return medianFrame
 
-# ----------- FUNCTION: Apply Processing to Frame -----------
-# @param frame: input BGR frame
-# @param mask: binary mask defining region of interest (ROI)
-# @param medianFrame: background reference frame for subtraction
-# @return: masked grayscale image and processed binary mask of detected foreground
-
+# ----------- FUNCTION: Frame Processing -----------
 def process_frame(frame, mask, medianFrame):
     frame_resized = cv2.resize(frame, PROCESS_REZ)
     gray = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2GRAY)
     masked = cv2.bitwise_and(gray, gray, mask=mask)
-
     fgmask = fgbg.apply(masked)
     blur = cv2.GaussianBlur(fgmask, (BLUR, BLUR), 0)
     roi_mean = np.mean(masked)
     dynamic_thresh = int(roi_mean * 0.8)
     _, binary = cv2.threshold(blur, dynamic_thresh, 255, cv2.THRESH_BINARY)
-
     kernel = np.ones((3, 3), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
     return masked, binary
 
-# ----------- FUNCTION: Create Binary Mask for ROI -----------
-# @param process_res: resolution of processing frame
-# @param roi_coords: tuple of (x, y, width, height) for rectangular ROI
-# @return: binary mask image
-
+# ----------- FUNCTION: Mask Creation -----------
 def create_mask(process_res, roi_coords):
     mask = np.zeros((process_res[1], process_res[0]), dtype=np.uint8)
     x, y, w, h = roi_coords
@@ -121,10 +130,6 @@ def create_mask(process_res, roi_coords):
     return mask
 
 # ----------- FUNCTION: Initialize Video Capture -----------
-# @param path: file path of the video
-# @param start_frame: number of frames to skip before processing
-# @return: cv2.VideoCapture object, or None if failure
-
 def initialize_video_capture(path, start_frame):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -133,22 +138,33 @@ def initialize_video_capture(path, start_frame):
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     return cap
 
-# ----------- FUNCTION: Save Detection Results to CSV -----------
-# @param filename: name of the CSV file
-# @param data: numpy array of detection data
-# @param header: string of CSV header
-# @return: None
+# ----------- FUNCTION: Save Detection Results -----------
+def save_results(filename, log, top_color, bottom_color):
+    with open(filename, 'w') as f:
+        f.write(f"# Video: {vid}\n")
+        f.write(f"# Start time: {video_start_time}\n\n")
+        f.write(f"# Top color: {top_color}\n")
+        f.write(f"# Bottom color: {bottom_color}\n\n")
+        f.write(f"# Initial Top: {zone_counts['top']}, Bottom: {zone_counts['bottom']}\n\n")
+        f.write("Frame,Timestamp(s),Direction,TopCount,BottomCount\n")
+        for row in log:
+            f.write(",".join(map(str, row)) + "\n")
 
-def save_results(filename, data, header):
-    np.savetxt(filename, data, header=header, delimiter=',', fmt='%d')
+# ----------- FUNCTION: Handle Graceful Exit -----------
+def handle_exit(signal_received=None, frame=None):
+    print('\nInterrupt received. Saving data before exit...')
+    save_results(detectFileName, detectLog, top_color, bottom_color)
+    cv2.destroyAllWindows()
+    sys.exit(0)
 
-# ----------- FUNCTION: Main Program Loop -----------
-# @return: None. Displays and processes video until completion or exit.
-# Saves processed frame data to CSV file at the end of processing.
+# Register the signal handler for Ctrl+C
+signal.signal(signal.SIGINT, handle_exit)
 
+# ----------- FUNCTION: Main Program -----------
 def run_detection():
-    global detectArray, frameCount
+    global detectArray, top_color, bottom_color
 
+    top_color, bottom_color = prompt_experiment_metadata()
     medianFrame = getMedian(vid, medianFrames, PROCESS_REZ)
     if medianFrame is None:
         return
@@ -159,51 +175,76 @@ def run_detection():
         return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
     frameCount = skipFrames
     start_time = time.time()
 
+    fly_last_y = {}
+    fly_id = 0
+
     while cap.isOpened():
-        loop_start = time.time()
         key = chr(cv2.waitKey(DELAY) & 0xFF)
         if key == 'q':
             break
-
 
         ret, frame = cap.read()
         if not ret:
             break
 
         frameCount += 1
-
-        # Skip every 2nd frame (50% frame reduction). Change 2 to 3 for more speedup.
-        if frameCount % 2 != 0:  # Skip odd frames
-           continue
-
+        if frameCount % 2 != 0:
+            continue
 
         maskedGray, binaryIM = process_frame(frame, mask, medianFrame)
 
-        # Timing estimate
+        contours, _ = cv2.findContours(binaryIM, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < MIN_AREA or area > MAX_MULTI_AREA:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            yc = y + h // 2
+            xc = x + w // 2
+
+            if fly_id not in fly_last_y:
+                fly_last_y[fly_id] = yc
+                fly_id += 1
+                continue
+
+            last_y = fly_last_y[fly_id]
+            if last_y < crossing_line <= yc:
+                zone_counts['top'] -= 1
+                zone_counts['bottom'] += 1
+                timestamp = frameCount / fps
+                detectLog.append([frameCount, round(timestamp, 2), "Top→Bottom", zone_counts['top'], zone_counts['bottom']])
+            elif last_y > crossing_line >= yc:
+                zone_counts['top'] += 1
+                zone_counts['bottom'] -= 1
+                timestamp = frameCount / fps
+                detectLog.append([frameCount, round(timestamp, 2), "Bottom→Top", zone_counts['top'], zone_counts['bottom']])
+
+            fly_last_y[fly_id] = yc
+            fly_id += 1
+
         elapsed = time.time() - start_time
         frames_done = frameCount - skipFrames
-        fps = frames_done / elapsed if elapsed > 0 else 0
-        est_remaining = (total_frames - frameCount) / fps if fps > 0 else 0
-        print(f"Frame: {frameCount}/{total_frames}, FPS: {fps:.2f}, ETA: {int(est_remaining // 60)} min {int(est_remaining % 60)} sec", end='\r')
-
+        processing_fps = frames_done / elapsed if elapsed > 0 else 0
+        est_remaining = (total_frames - frameCount) / processing_fps if processing_fps > 0 else 0
+        print(f"Frame: {frameCount}/{total_frames}, FPS: {processing_fps:.2f}, ETA: {int(est_remaining // 60)} min {int(est_remaining % 60)} sec", end='\r')
 
         cv2.imshow('Masked Frame', cv2.resize(maskedGray, DISPLAY_REZ))
-        cv2.imshow('Foreground Mask', cv2.resize(binaryIM, DISPLAY_REZ))
+        cv2.imshow('Binary Mask', cv2.resize(binaryIM, DISPLAY_REZ))
 
     cap.release()
     cv2.destroyAllWindows()
 
-    if frameCount > skipFrames:
-        print('\nDone with video. Saving detection file...')
-        save_results(detectFileName, detectArray, detectHeader)
+    if detectLog:
+        print('\nSaving crossing data...')
+        save_results(detectFileName, detectLog, top_color, bottom_color)
     else:
-        print('\nCould not open or read frames from video:', vid)
+        print('\nNo crossings detected.')
 
 # ----------- START PROGRAM -----------
 print("\n\nUse '+' and '-' keys to change object detect threshold by 1")
 print("Hold shift while pressing '+' or '-' to change threshold by 10\n")
 run_detection()
-
