@@ -1,1 +1,26 @@
 # FlyShock
+🛠️ Next Features To Add
+
+    🟦 Crossing Line Position Tool (GUI-based)
+
+        User drags a horizontal line on frame to set position before processing
+
+        Ensure this is intuitive and visible
+
+    📈 Real-Time Counts Display
+
+        Display fly counts top/bottom zones on live processed video
+
+        Optional: Include these in CSV comments too
+
+    🕒 Save Per-Crossing Timestamp
+
+        Each time a fly crosses, log exact timestamp (relative to video or absolute)
+
+    💾 Option to Save Raw Crossing Times Separately
+
+        New optional CSV or embedded section in the same file
+
+    🐜 Cross Detection Improvements
+
+        Consider optical flow or contour tracking if needed (low priority for now)

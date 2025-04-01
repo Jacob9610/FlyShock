@@ -77,7 +77,7 @@ def prompt_experiment_metadata():
     window.close()
     return values['top_color'], values['bottom_color']
 
-# ----------- FUNCTION: Prompt for Crop Range -----------
+# ----------- FUNCTION: Prompt for Crop Range (Updated with Player UI) -----------
 def select_crop_range(vid_path):
     cap = cv2.VideoCapture(vid_path)
     if not cap.isOpened():
@@ -85,24 +85,59 @@ def select_crop_range(vid_path):
         return 0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
     layout = [
-        [sg.Text("Select start and end time (in seconds)")],
-        [sg.Text("Start:"), sg.Slider(range=(0, total_frames//30), orientation='h', key='start', resolution=1)],
-        [sg.Text("End:"), sg.Slider(range=(0, total_frames//30), orientation='h', key='end', resolution=1)],
-        [sg.Button("OK")]
+        [sg.Image(filename='', key='-IMAGE-')],
+        [sg.Slider(range=(0, total_frames - 1), orientation='h', size=(60, 10), key='-SLIDER-', enable_events=True)],
+        [sg.Text('Selected Time:'), sg.Text('0 sec', key='-TIME-')],
+        [sg.Button('Play'), sg.Button('Pause'), sg.Button('Set Start'), sg.Button('Set End'), sg.Button('Confirm')]
     ]
-    window = sg.Window("Video Crop Range", layout)
+    window = sg.Window("Select Crop Range", layout, return_keyboard_events=True, finalize=True)
+
+    playing = False
+    current_frame = 0
+    start_frame = 0
+    end_frame = total_frames - 1
+
     while True:
-        event, values = window.read()
+        event, values = window.read(timeout=20)
         if event == sg.WINDOW_CLOSED:
-            exit()
-        if event == "OK":
-            start_sec = int(values['start'])
-            end_sec = int(values['end'])
             break
+
+        if event == 'Play':
+            playing = True
+        elif event == 'Pause':
+            playing = False
+        elif event == 'Set Start':
+            start_frame = int(values['-SLIDER-'])
+        elif event == 'Set End':
+            end_frame = int(values['-SLIDER-'])
+        elif event == 'Confirm':
+            break
+        elif event == '-SLIDER-':
+            current_frame = int(values['-SLIDER-'])
+            playing = False
+
+        if playing:
+            current_frame += 1
+            if current_frame >= total_frames:
+                current_frame = total_frames - 1
+                playing = False
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
+        ret, frame = cap.read()
+        if ret:
+            frame = cv2.resize(frame, (480, 270))
+            imgbytes = cv2.imencode('.png', frame)[1].tobytes()
+            window['-IMAGE-'].update(data=imgbytes)
+            window['-SLIDER-'].update(current_frame)
+            seconds = current_frame / fps
+            window['-TIME-'].update(f'{seconds:.2f} sec')
+
     window.close()
     cap.release()
-    return int(start_sec * 30), int(end_sec * 30)
+    return start_frame, end_frame
 
 # ----------- FUNCTION: Calculate Median Frame -----------
 def getMedian(vid, medianFrames, PROCESS_REZ):
