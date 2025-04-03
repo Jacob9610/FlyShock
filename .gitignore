@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints (if any)
+.ipynb_checkpoints/
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+.pipenv/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Output files
+*.csv
+
+# Python cache
+*.pyo
+*.pyd
+
+# Video files (if not stored in repo)
+*.mp4
+*.mov
+*.avi
+
+# IDE-specific
+.vscode/
+.idea/
+*.code-workspace
